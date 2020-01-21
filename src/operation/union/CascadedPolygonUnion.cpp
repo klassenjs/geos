@@ -34,6 +34,8 @@
 #include <memory>
 #include <vector>
 #include <sstream>
+#include <future>
+#include <iostream>
 
 #include <geos/operation/valid/IsValidOp.h>
 #include <geos/operation/IsSimpleOp.h>
@@ -153,7 +155,7 @@ CascadedPolygonUnion::Union()
 
     std::unique_ptr<index::strtree::ItemsList> itemTree(index.itemsTree());
 
-    return unionTree(itemTree.get());
+    return unionTree_p(itemTree.get(), 0);
 }
 
 geom::Geometry*
@@ -169,9 +171,28 @@ CascadedPolygonUnion::unionTree(
 }
 
 geom::Geometry*
+CascadedPolygonUnion::unionTree_p(
+    index::strtree::ItemsList* geomTree,
+    size_t level)
+{
+    /*
+     * Recursively unions all subtrees in the list into single geometries.
+     * The result is a list of Geometry's only
+     */
+    std::unique_ptr<GeometryListHolder> geoms(reduceToGeometries_p(geomTree, level));
+    return binaryUnion_p(geoms.get());
+}
+
+geom::Geometry*
 CascadedPolygonUnion::binaryUnion(GeometryListHolder* geoms)
 {
     return binaryUnion(geoms, 0, geoms->size());
+}
+
+geom::Geometry*
+CascadedPolygonUnion::binaryUnion_p(GeometryListHolder* geoms)
+{
+    return binaryUnion_p(geoms, 0, geoms->size());
 }
 
 geom::Geometry*
@@ -193,6 +214,36 @@ CascadedPolygonUnion::binaryUnion(GeometryListHolder* geoms,
     }
 }
 
+geom::Geometry*
+CascadedPolygonUnion::binaryUnion_p(GeometryListHolder* geoms,
+                                  std::size_t start, std::size_t end)
+{
+    if(end - start <= 1) {
+        return unionSafe(geoms->getGeometry(start), nullptr);
+    }
+    else if(end - start == 2) {
+        return unionSafe(geoms->getGeometry(start), geoms->getGeometry(start + 1));
+    }
+    else {
+        // recurse on both halves of the list
+        std::size_t mid = (end + start) / 2;
+
+        std::future<geom::Geometry*> fg0 = std::async(
+                                               std::launch::async,
+                                               [=]{ return binaryUnion(geoms, start, mid); }
+                                           );
+
+        std::future<geom::Geometry*> fg1 = std::async(
+                                               std::launch::async,
+                                               [=]{ return binaryUnion(geoms, mid, end); }
+                                           );
+
+        std::unique_ptr<geom::Geometry> g0(fg0.get());
+        std::unique_ptr<geom::Geometry> g1(fg1.get());
+        return unionSafe(g0.get(), g1.get());
+    }
+}
+
 GeometryListHolder*
 CascadedPolygonUnion::reduceToGeometries(index::strtree::ItemsList* geomTree)
 {
@@ -202,11 +253,69 @@ CascadedPolygonUnion::reduceToGeometries(index::strtree::ItemsList* geomTree)
     iterator_type end = geomTree->end();
     for(iterator_type i = geomTree->begin(); i != end; ++i) {
         if((*i).get_type() == index::strtree::ItemsListItem::item_is_list) {
+//std::cerr << "list\n";
             std::unique_ptr<geom::Geometry> geom(unionTree((*i).get_itemslist()));
             geoms->push_back_owned(geom.get());
             geom.release();
         }
         else if((*i).get_type() == index::strtree::ItemsListItem::item_is_geometry) {
+//std::cerr << "geom\n";
+            geoms->push_back(reinterpret_cast<geom::Geometry*>((*i).get_geometry()));
+        }
+        else {
+            assert(!static_cast<bool>("should never be reached"));
+        }
+    }
+
+    return geoms.release();
+}
+
+GeometryListHolder*
+CascadedPolygonUnion::reduceToGeometries_p(index::strtree::ItemsList* geomTree, size_t level)
+{
+    std::unique_ptr<GeometryListHolder> geoms(new GeometryListHolder());
+
+    typedef index::strtree::ItemsList::iterator iterator_type;
+    iterator_type end = geomTree->end();
+    for(iterator_type i = geomTree->begin(); i != end; ++i) {
+        if((*i).get_type() == index::strtree::ItemsListItem::item_is_list) {
+//std::cerr << "list\n";
+            std::vector<std::future<geom::Geometry*> > futures;
+            //int = 0;
+            for(iterator_type j = i; j != end; ++j) {
+                if((*j).get_type() == index::strtree::ItemsListItem::item_is_list) {
+                    //futures.push_back(
+                    //    std::async(
+                    //       (level <= 1) ? (std::launch::async) : (std::launch::deferred), 
+                    //       [=]{ return unionTree_p((*j).get_itemslist(), level+1); }
+                    //));
+                    if (level <= 1)
+                    futures.push_back(
+                        std::async(
+                           std::launch::async,
+                           [=]{ return unionTree_p((*j).get_itemslist(), level+1); }
+                    ));
+                    else
+                    futures.push_back(
+                        std::async(
+                           std::launch::async,
+                           [=]{ return unionTree((*j).get_itemslist()); } 
+                    ));
+                    i = j;
+                    //if (++c > 8) break;
+                } else {
+                    break;
+                }
+            }
+//std::cerr << "\tfutures:" << futures.size() << "\n";
+            for(auto& f: futures) { 
+                std::unique_ptr<geom::Geometry> geom(f.get());
+                geoms->push_back_owned(geom.get());
+                geom.release();
+            }
+        }
+        else if((*i).get_type() == index::strtree::ItemsListItem::item_is_geometry) {
+//std::cerr << "geom\n";
             geoms->push_back(reinterpret_cast<geom::Geometry*>((*i).get_geometry()));
         }
         else {

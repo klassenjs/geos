@@ -155,6 +155,7 @@ public:
 
 private:
     geom::Geometry* unionTree(index::strtree::ItemsList* geomTree);
+    geom::Geometry* unionTree_p(index::strtree::ItemsList* geomTree, size_t level);
 
     /**
      * Unions a list of geometries
@@ -162,6 +163,7 @@ private:
      * and performing a cascaded union on the tree.
      */
     geom::Geometry* binaryUnion(GeometryListHolder* geoms);
+    geom::Geometry* binaryUnion_p(GeometryListHolder* geoms);
 
     /**
      * Unions a section of a list using a recursive binary union on each half
@@ -174,6 +176,8 @@ private:
      */
     geom::Geometry* binaryUnion(GeometryListHolder* geoms, std::size_t start,
                                 std::size_t end);
+    geom::Geometry* binaryUnion_p(GeometryListHolder* geoms, std::size_t start,
+                                std::size_t end);
 
     /**
      * Reduces a tree of geometries to a list of geometries
@@ -183,6 +187,7 @@ private:
      * @return a list of Geometrys
      */
     GeometryListHolder* reduceToGeometries(index::strtree::ItemsList* geomTree);
+    GeometryListHolder* reduceToGeometries_p(index::strtree::ItemsList* geomTree, size_t level);
 
     /**
      * Computes the union of two geometries,
